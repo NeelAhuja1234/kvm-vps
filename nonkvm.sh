@@ -9,24 +9,16 @@ set -euo pipefail
 display_header() {
     clear
     cat << "EOF"
-====================================================================================================================================================================================
-
-
-  .-----------------. .----------------.  .----------------.  .----------------.  .----------------.  .----------------.  .----------------.  .----------------.  .----------------. 
-| .--------------. || .--------------. || .--------------. || .--------------. || .--------------. || .--------------. || .--------------. || .--------------. || .--------------. |
-| | ____  _____  | || |  _________   | || |  _________   | || |   _____      | || |     ______   | || |  _______     | || |      __      | || |  _________   | || |  _________   | |
-| ||_   \|_   _| | || | |_   ___  |  | || | |_   ___  |  | || |  |_   _|     | || |   .' ___  |  | || | |_   __ \    | || |     /  \     | || | |_   ___  |  | || | |  _   _  |  | |
-| |  |   \ | |   | || |   | |_  \_|  | || |   | |_  \_|  | || |    | |       | || |  / .'   \_|  | || |   | |__) |   | || |    / /\ \    | || |   | |_  \_|  | || | |_/ | | \_|  | |
-| |  | |\ \| |   | || |   |  _|  _   | || |   |  _|  _   | || |    | |   _   | || |  | |         | || |   |  __ /    | || |   / ____ \   | || |   |  _|      | || |     | |      | |
-| | _| |_\   |_  | || |  _| |___/ |  | || |  _| |___/ |  | || |   _| |__/ |  | || |  \ `.___.'\  | || |  _| |  \ \_  | || | _/ /    \ \_ | || |  _| |_       | || |    _| |_     | |
-| ||_____|\____| | || | |_________|  | || | |_________|  | || |  |________|  | || |   `._____.'  | || | |____| |___| | || ||____|  |____|| || | |_____|      | || |   |_____|    | |
-| |              | || |              | || |              | || |              | || |              | || |              | || |              | || |              | || |              | |
-| '--------------' || '--------------' || '--------------' || '--------------' || '--------------' || '--------------' || '--------------' || '--------------' || '--------------' |
- '----------------'  '----------------'  '----------------'  '----------------'  '----------------'  '----------------'  '----------------'  '----------------'  '----------------'
-
-                                                                           #### MADE BY NEELCRAFT
-
-====================================================================================================================================================================================
+========================================================================
+  _    _  ____  _____ _____ _   _  _____ ____   ______     ________
+ | |  | |/ __ \|  __ \_   _| \ | |/ ____|  _ \ / __ \ \   / /___  /
+ | |__| | |  | | |__) || | |  \| | |  __| |_) | |  | \ \_/ /   / / 
+ |  __  | |  | |  ___/ | | |   \ | | |_ |  _ <| |  | |\   /   / /  
+ | |  | | |__| | |    _| |_| |\  | |__| | |_) | |__| | | |   / /__ 
+ |_|  |_|\____/|_|   |_____|_| \_|\_____|____/ \____/  |_|  /_____|
+                                                                  
+                    POWERED BY HOPINGBOYZ
+========================================================================
 EOF
     echo
 }
@@ -606,4 +598,278 @@ edit_vm_config() {
                     ;;
                 9)
                     while true; do
-                        read -p "$(print_status "INPUT" "Enter n
+                        read -p "$(print_status "INPUT" "Enter new disk size (current: $DISK_SIZE): ")" new_disk_size
+                        new_disk_size="${new_disk_size:-$DISK_SIZE}"
+                        if validate_input "size" "$new_disk_size"; then
+                            DISK_SIZE="$new_disk_size"
+                            break
+                        fi
+                    done
+                    ;;
+                0)
+                    return 0
+                    ;;
+                *)
+                    print_status "ERROR" "Invalid selection"
+                    continue
+                    ;;
+            esac
+            
+            # Recreate seed image with new configuration if user/password/hostname changed
+            if [[ "$edit_choice" -eq 1 || "$edit_choice" -eq 2 || "$edit_choice" -eq 3 ]]; then
+                print_status "INFO" "Updating cloud-init configuration..."
+                setup_vm_image
+            fi
+            
+            # Save configuration
+            save_vm_config
+            
+            read -p "$(print_status "INPUT" "Continue editing? (y/N): ")" continue_editing
+            if [[ ! "$continue_editing" =~ ^[Yy]$ ]]; then
+                break
+            fi
+        done
+    fi
+}
+
+# Function to resize VM disk
+resize_vm_disk() {
+    local vm_name=$1
+    
+    if load_vm_config "$vm_name"; then
+        print_status "INFO" "Current disk size: $DISK_SIZE"
+        
+        while true; do
+            read -p "$(print_status "INPUT" "Enter new disk size (e.g., 50G): ")" new_disk_size
+            if validate_input "size" "$new_disk_size"; then
+                if [[ "$new_disk_size" == "$DISK_SIZE" ]]; then
+                    print_status "INFO" "New disk size is the same as current size. No changes made."
+                    return 0
+                fi
+                
+                # Check if new size is smaller than current (not recommended)
+                local current_size_num=${DISK_SIZE%[GgMm]}
+                local new_size_num=${new_disk_size%[GgMm]}
+                local current_unit=${DISK_SIZE: -1}
+                local new_unit=${new_disk_size: -1}
+                
+                # Convert both to MB for comparison
+                if [[ "$current_unit" =~ [Gg] ]]; then
+                    current_size_num=$((current_size_num * 1024))
+                fi
+                if [[ "$new_unit" =~ [Gg] ]]; then
+                    new_size_num=$((new_size_num * 1024))
+                fi
+                
+                if [[ $new_size_num -lt $current_size_num ]]; then
+                    print_status "WARN" "Shrinking disk size is not recommended and may cause data loss!"
+                    read -p "$(print_status "INPUT" "Are you sure you want to continue? (y/N): ")" confirm_shrink
+                    if [[ ! "$confirm_shrink" =~ ^[Yy]$ ]]; then
+                        print_status "INFO" "Disk resize cancelled."
+                        return 0
+                    fi
+                fi
+                
+                # Resize the disk
+                print_status "INFO" "Resizing disk to $new_disk_size..."
+                if qemu-img resize "$IMG_FILE" "$new_disk_size"; then
+                    DISK_SIZE="$new_disk_size"
+                    save_vm_config
+                    print_status "SUCCESS" "Disk resized successfully to $new_disk_size"
+                else
+                    print_status "ERROR" "Failed to resize disk"
+                    return 1
+                fi
+                break
+            fi
+        done
+    fi
+}
+
+# Function to show VM performance metrics
+show_vm_performance() {
+    local vm_name=$1
+    
+    if load_vm_config "$vm_name"; then
+        if is_vm_running "$vm_name"; then
+            print_status "INFO" "Performance metrics for VM: $vm_name"
+            echo "=========================================="
+            
+            # Get QEMU process ID
+            local qemu_pid=$(pgrep -f "qemu-system-x86_64.*$IMG_FILE")
+            if [[ -n "$qemu_pid" ]]; then
+                # Show process stats
+                echo "QEMU Process Stats:"
+                ps -p "$qemu_pid" -o pid,%cpu,%mem,sz,rss,vsz,cmd --no-headers
+                echo
+                
+                # Show memory usage
+                echo "Memory Usage:"
+                free -h
+                echo
+                
+                # Show disk usage
+                echo "Disk Usage:"
+                df -h "$IMG_FILE" 2>/dev/null || du -h "$IMG_FILE"
+            else
+                print_status "ERROR" "Could not find QEMU process for VM $vm_name"
+            fi
+        else
+            print_status "INFO" "VM $vm_name is not running"
+            echo "Configuration:"
+            echo "  Memory: $MEMORY MB"
+            echo "  CPUs: $CPUS"
+            echo "  Disk: $DISK_SIZE"
+        fi
+        echo "=========================================="
+        read -p "$(print_status "INPUT" "Press Enter to continue...")"
+    fi
+}
+
+# Main menu function
+main_menu() {
+    while true; do
+        display_header
+        
+        local vms=($(get_vm_list))
+        local vm_count=${#vms[@]}
+        
+        if [ $vm_count -gt 0 ]; then
+            print_status "INFO" "Found $vm_count existing VM(s):"
+            for i in "${!vms[@]}"; do
+                local status="Stopped"
+                if is_vm_running "${vms[$i]}"; then
+                    status="Running"
+                fi
+                printf "  %2d) %s (%s)\n" $((i+1)) "${vms[$i]}" "$status"
+            done
+            echo
+        fi
+        
+        echo "Main Menu:"
+        echo "  1) Create a new VM"
+        if [ $vm_count -gt 0 ]; then
+            echo "  2) Start a VM"
+            echo "  3) Stop a VM"
+            echo "  4) Show VM info"
+            echo "  5) Edit VM configuration"
+            echo "  6) Delete a VM"
+            echo "  7) Resize VM disk"
+            echo "  8) Show VM performance"
+        fi
+        echo "  0) Exit"
+        echo
+        
+        read -p "$(print_status "INPUT" "Enter your choice: ")" choice
+        
+        case $choice in
+            1)
+                create_new_vm
+                ;;
+            2)
+                if [ $vm_count -gt 0 ]; then
+                    read -p "$(print_status "INPUT" "Enter VM number to start: ")" vm_num
+                    if [[ "$vm_num" =~ ^[0-9]+$ ]] && [ "$vm_num" -ge 1 ] && [ "$vm_num" -le $vm_count ]; then
+                        start_vm "${vms[$((vm_num-1))]}"
+                    else
+                        print_status "ERROR" "Invalid selection"
+                    fi
+                fi
+                ;;
+            3)
+                if [ $vm_count -gt 0 ]; then
+                    read -p "$(print_status "INPUT" "Enter VM number to stop: ")" vm_num
+                    if [[ "$vm_num" =~ ^[0-9]+$ ]] && [ "$vm_num" -ge 1 ] && [ "$vm_num" -le $vm_count ]; then
+                        stop_vm "${vms[$((vm_num-1))]}"
+                    else
+                        print_status "ERROR" "Invalid selection"
+                    fi
+                fi
+                ;;
+            4)
+                if [ $vm_count -gt 0 ]; then
+                    read -p "$(print_status "INPUT" "Enter VM number to show info: ")" vm_num
+                    if [[ "$vm_num" =~ ^[0-9]+$ ]] && [ "$vm_num" -ge 1 ] && [ "$vm_num" -le $vm_count ]; then
+                        show_vm_info "${vms[$((vm_num-1))]}"
+                    else
+                        print_status "ERROR" "Invalid selection"
+                    fi
+                fi
+                ;;
+            5)
+                if [ $vm_count -gt 0 ]; then
+                    read -p "$(print_status "INPUT" "Enter VM number to edit: ")" vm_num
+                    if [[ "$vm_num" =~ ^[0-9]+$ ]] && [ "$vm_num" -ge 1 ] && [ "$vm_num" -le $vm_count ]; then
+                        edit_vm_config "${vms[$((vm_num-1))]}"
+                    else
+                        print_status "ERROR" "Invalid selection"
+                    fi
+                fi
+                ;;
+            6)
+                if [ $vm_count -gt 0 ]; then
+                    read -p "$(print_status "INPUT" "Enter VM number to delete: ")" vm_num
+                    if [[ "$vm_num" =~ ^[0-9]+$ ]] && [ "$vm_num" -ge 1 ] && [ "$vm_num" -le $vm_count ]; then
+                        delete_vm "${vms[$((vm_num-1))]}"
+                    else
+                        print_status "ERROR" "Invalid selection"
+                    fi
+                fi
+                ;;
+            7)
+                if [ $vm_count -gt 0 ]; then
+                    read -p "$(print_status "INPUT" "Enter VM number to resize disk: ")" vm_num
+                    if [[ "$vm_num" =~ ^[0-9]+$ ]] && [ "$vm_num" -ge 1 ] && [ "$vm_num" -le $vm_count ]; then
+                        resize_vm_disk "${vms[$((vm_num-1))]}"
+                    else
+                        print_status "ERROR" "Invalid selection"
+                    fi
+                fi
+                ;;
+            8)
+                if [ $vm_count -gt 0 ]; then
+                    read -p "$(print_status "INPUT" "Enter VM number to show performance: ")" vm_num
+                    if [[ "$vm_num" =~ ^[0-9]+$ ]] && [ "$vm_num" -ge 1 ] && [ "$vm_num" -le $vm_count ]; then
+                        show_vm_performance "${vms[$((vm_num-1))]}"
+                    else
+                        print_status "ERROR" "Invalid selection"
+                    fi
+                fi
+                ;;
+            0)
+                print_status "INFO" "Goodbye!"
+                exit 0
+                ;;
+            *)
+                print_status "ERROR" "Invalid option"
+                ;;
+        esac
+        
+        read -p "$(print_status "INPUT" "Press Enter to continue...")"
+    done
+}
+
+# Set trap to cleanup on exit
+trap cleanup EXIT
+
+# Check dependencies
+check_dependencies
+
+# Initialize paths
+VM_DIR="${VM_DIR:-$HOME/vms}"
+mkdir -p "$VM_DIR"
+
+# Supported OS list
+declare -A OS_OPTIONS=(
+    ["Ubuntu 22.04"]="ubuntu|jammy|https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-amd64.img|ubuntu22|ubuntu|ubuntu"
+    ["Ubuntu 24.04"]="ubuntu|noble|https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img|ubuntu24|ubuntu|ubuntu"
+    ["Debian 11"]="debian|bullseye|https://cloud.debian.org/images/cloud/bullseye/latest/debian-11-generic-amd64.qcow2|debian11|debian|debian"
+    ["Debian 12"]="debian|bookworm|https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-generic-amd64.qcow2|debian12|debian|debian"
+    ["Fedora 40"]="fedora|40|https://download.fedoraproject.org/pub/fedora/linux/releases/40/Cloud/x86_64/images/Fedora-Cloud-Base-40-1.14.x86_64.qcow2|fedora40|fedora|fedora"
+    ["CentOS Stream 9"]="centos|stream9|https://cloud.centos.org/centos/9-stream/x86_64/images/CentOS-Stream-GenericCloud-9-latest.x86_64.qcow2|centos9|centos|centos"
+    ["AlmaLinux 9"]="almalinux|9|https://repo.almalinux.org/almalinux/9/cloud/x86_64/images/AlmaLinux-9-GenericCloud-latest.x86_64.qcow2|almalinux9|alma|alma"
+    ["Rocky Linux 9"]="rockylinux|9|https://download.rockylinux.org/pub/rocky/9/images/x86_64/Rocky-9-GenericCloud.latest.x86_64.qcow2|rocky9|rocky|rocky"
+)
+
+# Start the main menu
+main_menu
